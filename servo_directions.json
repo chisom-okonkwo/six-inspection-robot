@@ -1,0 +1,26 @@
+{
+    "FR": {
+        "hip_forward_sign": 1,
+        "knee_lift_sign": 1
+    },
+    "MR": {
+        "hip_forward_sign": 1,
+        "knee_lift_sign": 1
+    },
+    "RR": {
+        "hip_forward_sign": 1,
+        "knee_lift_sign": 1
+    },
+    "FL": {
+        "hip_forward_sign": 1,
+        "knee_lift_sign": 1
+    },
+    "ML": {
+        "hip_forward_sign": 1,
+        "knee_lift_sign": 1
+    },
+    "RL": {
+        "hip_forward_sign": 1,
+        "knee_lift_sign": 1
+    }
+}
