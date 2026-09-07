@@ -1,0 +1,12 @@
+# Byte-compiled / optimized / DLLs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment directories
+.env
+.venv
+env/
+venv/
+ENV/
