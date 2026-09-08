@@ -10,3 +10,7 @@ __pycache__/
 env/
 venv/
 ENV/
+
+# Other files
+.jpg
+.jpeg
