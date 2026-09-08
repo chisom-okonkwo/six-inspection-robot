@@ -11,6 +11,9 @@ env/
 venv/
 ENV/
 
+# Model weights (YOLO)
+*.pt
+
 # Other files
-.jpg
-.jpeg
+*.jpg
+*.jpeg
