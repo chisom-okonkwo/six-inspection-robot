@@ -1,7 +1,7 @@
 import argparse
 
-from ezb import EZB
-from six_robot import SixRobot
+from robot.ezb import EZB
+from robot.six_robot import SixRobot
 
 
 def main():

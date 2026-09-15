@@ -2,8 +2,8 @@ import time
 
 import cv2
 
-from camera import EZBCamera
-from detector import SafetyDetector
+from perception.camera import EZBCamera
+from perception.detector import SafetyDetector
 
 
 def main():

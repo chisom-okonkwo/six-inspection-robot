@@ -1,7 +1,8 @@
+from pathlib import Path
 import json
 import time
 
-from six_config import (
+from robot.six_config import (
     LEGS,
     NEUTRAL,
     HIP_STRIDE,
@@ -11,12 +12,16 @@ from six_config import (
 )
 
 
+ROBOT_DIR = Path(__file__).resolve().parent
+CALIBRATION_FILE = ROBOT_DIR / "servo_directions.json"
+
+
 class SixRobot:
 
     def __init__(
         self,
         ezb,
-        calibration_file="servo_directions.json"
+        calibration_file=CALIBRATION_FILE
     ):
         self.ezb = ezb
 

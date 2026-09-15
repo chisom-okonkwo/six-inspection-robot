@@ -1,13 +1,25 @@
 import json
 import time
 
-from ezb import EZB
-from six_config import LEGS, NEUTRAL
+from robot.ezb import EZB
+from robot.six_config import LEGS, NEUTRAL
+from pathlib import Path
 
+
+PROJECT_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parent
+    .parent
+)
+
+OUTPUT_FILE = (
+    PROJECT_ROOT
+    / "robot"
+    / "servo_directions.json"
+)
 
 TEST_OFFSET = 10
-
-OUTPUT_FILE = "servo_directions.json"
 
 
 def ask_yes_no(question):

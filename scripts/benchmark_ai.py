@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from detector import SafetyDetector
+from perception.detector import SafetyDetector
 
 
 def main():

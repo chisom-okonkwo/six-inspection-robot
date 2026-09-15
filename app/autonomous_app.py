@@ -4,14 +4,27 @@ import time
 
 import cv2
 
-from ezb import EZB
-from six_robot import SixRobot
+from pathlib import Path
+from robot.ezb import EZB
+from robot.six_robot import SixRobot
 
-from robot_state import RobotState
-from perception_worker import PerceptionWorker
-from safety_supervisor import SafetySupervisor
-from motion_worker import MotionWorker
+from autonomy.robot_state import RobotState
+from perception.perception_worker import PerceptionWorker
+from autonomy.safety_supervisor import SafetySupervisor
+from autonomy.motion_worker import MotionWorker
 
+PROJECT_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parent
+    .parent
+)
+
+DEFAULT_MODEL = (
+    PROJECT_ROOT
+    / "models"
+    / "yolo26n.pt"
+)
 
 def wait_for_perception(
     state,
@@ -238,7 +251,7 @@ def main():
 
     parser.add_argument(
         "--model",
-        default="yolo26n.pt"
+        default=str(DEFAULT_MODEL)
     )
 
     parser.add_argument(

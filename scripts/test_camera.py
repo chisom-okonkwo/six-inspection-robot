@@ -2,7 +2,7 @@ import time
 
 import cv2
 
-from camera import EZBCamera
+from perception.camera import EZBCamera
 
 
 def main():

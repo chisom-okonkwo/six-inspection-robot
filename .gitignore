@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
 
 # Environment directories
 .env
@@ -11,9 +12,35 @@ env/
 venv/
 ENV/
 
-# Model weights (YOLO)
-*.pt
-
 # Other files
 *.jpg
 *.jpeg
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated images / logs
+data/snapshots/*
+data/logs/*
+
+# Keep directories
+!data/snapshots/.gitkeep
+!data/logs/.gitkeep
+
+# Large ML models (Model weights)
+models/*.pt
+models/*.onnx
+models/*.engine
+
+# Temporary files
+*.tmp
+*.log

@@ -1,8 +1,8 @@
 import threading
 import time
 
-from camera import EZBCamera
-from detector import SafetyDetector
+from perception.camera import EZBCamera
+from perception.detector import SafetyDetector
 
 
 class PerceptionWorker(threading.Thread):
