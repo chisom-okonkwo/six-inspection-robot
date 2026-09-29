@@ -5,13 +5,23 @@ import time
 import cv2
 
 from pathlib import Path
+
 from robot.ezb import EZB
 from robot.six_robot import SixRobot
 
 from autonomy.robot_state import RobotState
-from perception.perception_worker import PerceptionWorker
-from autonomy.safety_supervisor import SafetySupervisor
+from perception.perception_worker import (
+    PerceptionWorker
+)
+from autonomy.safety_supervisor import (
+    SafetySupervisor
+)
 from autonomy.motion_worker import MotionWorker
+
+
+# ======================================================
+# PATHS
+# ======================================================
 
 PROJECT_ROOT = (
     Path(__file__)
@@ -25,6 +35,11 @@ DEFAULT_MODEL = (
     / "models"
     / "yolo26n.pt"
 )
+
+
+# ======================================================
+# PERCEPTION STARTUP
+# ======================================================
 
 def wait_for_perception(
     state,
@@ -75,7 +90,9 @@ def wait_for_perception(
 
         if failed_event.is_set():
 
-            snapshot = state.snapshot()
+            snapshot = (
+                state.snapshot()
+            )
 
             print(
                 "[SYSTEM] Perception startup "
@@ -100,7 +117,9 @@ def wait_for_perception(
 
         if elapsed >= timeout:
 
-            snapshot = state.snapshot()
+            snapshot = (
+                state.snapshot()
+            )
 
             print()
             print(
@@ -138,7 +157,9 @@ def wait_for_perception(
             >= 5.0
         ):
 
-            snapshot = state.snapshot()
+            snapshot = (
+                state.snapshot()
+            )
 
             print(
                 "[SYSTEM] Still starting... "
@@ -152,8 +173,7 @@ def wait_for_perception(
 
             last_status_time = now
 
-        # Event.wait() is preferable to
-        # busy spinning.
+        # Avoid busy-spinning.
         shutdown_event.wait(
             0.10
         )
@@ -161,9 +181,30 @@ def wait_for_perception(
     return False
 
 
-def draw_status(frame, snapshot, mode):
+# ======================================================
+# DISPLAY
+# ======================================================
+
+def draw_status(
+    frame,
+    snapshot,
+    mode
+):
+
+    obstacle_label = (
+        snapshot["obstacle_label"]
+        if snapshot["obstacle_detected"]
+        else "NO"
+    )
+
+    obstacle_side = (
+        snapshot["obstacle_side"]
+        if snapshot["obstacle_detected"]
+        else "-"
+    )
 
     lines = [
+
         f"Mode: {mode.upper()}",
 
         (
@@ -188,13 +229,23 @@ def draw_status(frame, snapshot, mode):
         ),
 
         (
-            "Confidence: "
+            "Person confidence: "
             f"{snapshot['person_confidence']:.2f}"
         ),
 
         (
             "Safety: "
             f"{snapshot['safety_state']}"
+        ),
+
+        (
+            "Obstacle: "
+            f"{obstacle_label}"
+        ),
+
+        (
+            "Obstacle side: "
+            f"{obstacle_side}"
         ),
 
         (
@@ -217,15 +268,19 @@ def draw_status(frame, snapshot, mode):
             line,
             (10, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.55,
             (255, 255, 255),
             2
         )
 
-        y += 27
+        y += 25
 
     return frame
 
+
+# ======================================================
+# APPLICATION
+# ======================================================
 
 def main():
 
@@ -244,8 +299,9 @@ def main():
         ],
         default="observe",
         help=(
-            "observe = AI only, no movement. "
-            "patrol = autonomous movement."
+            "observe = AI/perception only. "
+            "patrol = autonomous movement "
+            "with obstacle avoidance."
         )
     )
 
@@ -268,18 +324,34 @@ def main():
 
     args = parser.parse_args()
 
-    # ==========================================
-    # SHARED SYNCHRONIZATION OBJECTS
-    # ==========================================
+    # ==================================================
+    # SYNCHRONIZATION EVENTS
+    # ==================================================
 
-    shutdown_event = threading.Event()
+    shutdown_event = (
+        threading.Event()
+    )
 
-    person_event = threading.Event()
+    # Raw/confirmed human detection from
+    # perception.
+    person_event = (
+        threading.Event()
+    )
 
-    safety_stop_event = threading.Event()
+    # Confirmed obstacle detection from
+    # perception.
+    obstacle_event = (
+        threading.Event()
+    )
 
+    # Controlled by SafetySupervisor.
+    # This deliberately remains separate
+    # from person_event.
+    safety_stop_event = (
+        threading.Event()
+    )
 
-    # Perception startup synchronization
+    # Perception startup synchronization.
     perception_ready_event = (
         threading.Event()
     )
@@ -288,20 +360,31 @@ def main():
         threading.Event()
     )
 
+    # ==================================================
+    # SHARED STATE
+    # ==================================================
+
     state = RobotState()
 
     state.set_system(
         "STARTING"
     )
 
-    # ==========================================
+    # ==================================================
     # PERCEPTION
-    # ==========================================
+    # ==================================================
 
     perception = PerceptionWorker(
         state=state,
-        person_event=person_event,
-        shutdown_event=shutdown_event,
+
+        person_event=
+            person_event,
+
+        obstacle_event=
+            obstacle_event,
+
+        shutdown_event=
+            shutdown_event,
 
         ready_event=
             perception_ready_event,
@@ -309,17 +392,31 @@ def main():
         startup_failed_event=
             perception_failed_event,
 
-        model_path=args.model,
-        confidence=args.confidence
+        model_path=
+            args.model,
+
+        confidence=
+            args.confidence
     )
+
+    # ==================================================
+    # SAFETY
+    # ==================================================
 
     safety = SafetySupervisor(
         state=state,
-        person_event=person_event,
+
+        person_event=
+            person_event,
+
         safety_stop_event=
             safety_stop_event,
-        shutdown_event=shutdown_event,
-        clear_delay=args.clear_delay
+
+        shutdown_event=
+            shutdown_event,
+
+        clear_delay=
+            args.clear_delay
     )
 
     threads = [
@@ -335,7 +432,10 @@ def main():
 
     try:
 
-        # Start AI before motion.
+        # ==============================================
+        # START PERCEPTION + SAFETY FIRST
+        # ==============================================
+
         perception.start()
         safety.start()
 
@@ -349,12 +449,12 @@ def main():
 
             raise RuntimeError(
                 "Perception did not become "
-                "ready in time."
+                "ready successfully."
             )
 
-        # ======================================
+        # ==============================================
         # PATROL MODE
-        # ======================================
+        # ==============================================
 
         if args.mode == "patrol":
 
@@ -374,9 +474,15 @@ def main():
 
             motion = MotionWorker(
                 robot=six,
+
                 state=state,
+
                 safety_stop_event=
                     safety_stop_event,
+
+                obstacle_event=
+                    obstacle_event,
+
                 shutdown_event=
                     shutdown_event
             )
@@ -393,6 +499,10 @@ def main():
                 "DISABLED"
             )
 
+        # ==============================================
+        # SYSTEM READY
+        # ==============================================
+
         state.set_system(
             "RUNNING"
         )
@@ -402,23 +512,31 @@ def main():
         print(" AUTONOMOUS SAFETY SYSTEM")
         print("==============================")
         print()
+
         print(
             f"Mode: {args.mode.upper()}"
         )
+
         print()
-        print("Q = graceful shutdown")
+        print(
+            "Q = graceful shutdown"
+        )
+
         print(
             "E = emergency servo release"
         )
+
         print()
 
-        # ======================================
+        # ==============================================
         # MAIN UI LOOP
-        # ======================================
+        # ==============================================
 
         while not shutdown_event.is_set():
 
-            frame = state.get_frame()
+            frame = (
+                state.get_frame()
+            )
 
             if frame is not None:
 
@@ -443,9 +561,9 @@ def main():
                 & 0xFF
             )
 
-            # ----------------------------------
+            # ------------------------------------------
             # GRACEFUL QUIT
-            # ----------------------------------
+            # ------------------------------------------
 
             if key == ord("q"):
 
@@ -458,9 +576,9 @@ def main():
 
                 break
 
-            # ----------------------------------
+            # ------------------------------------------
             # EMERGENCY RELEASE
-            # ----------------------------------
+            # ------------------------------------------
 
             if key == ord("e"):
 
@@ -479,7 +597,9 @@ def main():
 
                 break
 
-            time.sleep(0.005)
+            time.sleep(
+                0.005
+            )
 
     except KeyboardInterrupt:
 
@@ -498,11 +618,17 @@ def main():
             error
         )
 
-        state.set_error(error)
+        state.set_error(
+            error
+        )
 
         shutdown_event.set()
 
     finally:
+
+        # ==============================================
+        # SHUTDOWN
+        # ==============================================
 
         state.set_system(
             "SHUTTING_DOWN"
@@ -520,21 +646,26 @@ def main():
                 timeout=3.0
             )
 
-        # ======================================
+        # ==============================================
         # ROBOT CLEANUP
-        # ======================================
+        # ==============================================
 
         if six is not None:
 
             if emergency_release:
 
-                # Already released.
+                # Servos already released.
                 pass
 
-            elif person_event.is_set():
+            elif (
+                person_event.is_set()
+                or
+                obstacle_event.is_set()
+            ):
 
                 # Do not unexpectedly move toward
-                # neutral while somebody is nearby.
+                # neutral if an unsafe condition
+                # remains in front of the robot.
                 six.halt()
 
             else:
@@ -547,6 +678,7 @@ def main():
                 six.stop()
 
         if ezb is not None:
+
             ezb.disconnect()
 
         cv2.destroyAllWindows()

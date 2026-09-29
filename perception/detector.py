@@ -20,7 +20,6 @@ class SafetyDetector:
 
         self.confidence = confidence
 
-        # Find the model's class ID for "person"
         self.person_class_id = None
 
         for class_id, name in (
@@ -29,8 +28,8 @@ class SafetyDetector:
 
             if name.lower() == "person":
 
-                self.person_class_id = (
-                    int(class_id)
+                self.person_class_id = int(
+                    class_id
                 )
 
                 break
@@ -38,8 +37,8 @@ class SafetyDetector:
         if self.person_class_id is None:
 
             raise RuntimeError(
-                "This model does not contain "
-                "a 'person' class"
+                "Model does not contain "
+                "a person class"
             )
 
         print(
@@ -47,16 +46,15 @@ class SafetyDetector:
             self.person_class_id
         )
 
-    # --------------------------------------------------
+    # ==================================================
+    # FULL SCENE DETECTION
+    # ==================================================
 
-    def detect_people(self, frame):
+    def detect_scene(self, frame):
 
         results = self.model.predict(
             source=frame,
             conf=self.confidence,
-            classes=[
-                self.person_class_id
-            ],
             imgsz=320,
             verbose=False
         )
@@ -65,35 +63,74 @@ class SafetyDetector:
 
         detections = []
 
-        if result.boxes is not None:
+        if result.boxes is None:
 
-            for box in result.boxes:
+            return detections, result
 
-                coordinates = (
-                    box.xyxy[0]
-                    .cpu()
-                    .tolist()
+        for box in result.boxes:
+
+            class_id = int(
+                box.cls[0].cpu()
+            )
+
+            confidence = float(
+                box.conf[0].cpu()
+            )
+
+            coordinates = (
+                box.xyxy[0]
+                .cpu()
+                .tolist()
+            )
+
+            x1, y1, x2, y2 = [
+                int(value)
+                for value in coordinates
+            ]
+
+            label = self.model.names[
+                class_id
+            ]
+
+            detections.append({
+                "class_id": class_id,
+                "label": label.lower(),
+                "confidence": confidence,
+                "bbox": (
+                    x1,
+                    y1,
+                    x2,
+                    y2
                 )
-
-                confidence = float(
-                    box.conf[0]
-                    .cpu()
-                )
-
-                x1, y1, x2, y2 = [
-                    int(value)
-                    for value in coordinates
-                ]
-
-                detections.append({
-                    "label": "person",
-                    "confidence": confidence,
-                    "bbox": (
-                        x1,
-                        y1,
-                        x2,
-                        y2
-                    )
-                })
+            })
 
         return detections, result
+
+    # ==================================================
+    # FILTER PEOPLE
+    # ==================================================
+
+    @staticmethod
+    def get_people(detections):
+
+        return [
+            detection
+            for detection in detections
+            if detection["label"] == "person"
+        ]
+
+    # ==================================================
+    # BACKWARDS COMPATIBILITY
+    # ==================================================
+
+    def detect_people(self, frame):
+
+        detections, result = (
+            self.detect_scene(frame)
+        )
+
+        people = self.get_people(
+            detections
+        )
+
+        return people, result

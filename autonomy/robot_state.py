@@ -29,6 +29,12 @@ class RobotState:
 
         self.latest_frame = None
 
+        self.obstacle_detected = False
+        self.obstacle_label = None
+        self.obstacle_confidence = 0.0
+        self.obstacle_side = None
+        self.obstacle_area_ratio = 0.0
+
     # --------------------------------------------------
 
     def update_perception(
@@ -149,6 +155,21 @@ class RobotState:
 
                 "last_error":
                     self.last_error,
+                    
+                "obstacle_detected":
+                    self.obstacle_detected,
+
+                "obstacle_label":
+                    self.obstacle_label,
+
+                "obstacle_confidence":
+                    self.obstacle_confidence,
+
+                "obstacle_side":
+                    self.obstacle_side,
+
+                "obstacle_area_ratio":
+                    self.obstacle_area_ratio,
             }
 
     def get_frame(self):
@@ -159,3 +180,35 @@ class RobotState:
                 return None
 
             return self.latest_frame.copy()
+
+
+    def update_obstacle(
+        self,
+        detected,
+        label=None,
+        confidence=0.0,
+        side=None,
+        area_ratio=0.0
+    ):
+
+        with self._lock:
+
+            self.obstacle_detected = (
+                detected
+            )
+
+            self.obstacle_label = (
+                label
+            )
+
+            self.obstacle_confidence = (
+                confidence
+            )
+
+            self.obstacle_side = (
+                side
+            )
+
+            self.obstacle_area_ratio = (
+                area_ratio
+            )
