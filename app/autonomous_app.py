@@ -10,14 +10,13 @@ from robot.ezb import EZB
 from robot.six_robot import SixRobot
 
 from autonomy.robot_state import RobotState
-from perception.perception_worker import (
-    PerceptionWorker
-)
-from autonomy.safety_supervisor import (
-    SafetySupervisor
-)
+from perception.perception_worker import (PerceptionWorker)
+from autonomy.safety_supervisor import (SafetySupervisor)
 from autonomy.motion_worker import MotionWorker
 
+from inspection.incident_logger import (IncidentLogger)
+
+from inspection.inspection_manager import (InspectionManager)
 
 # ======================================================
 # PATHS
@@ -35,7 +34,6 @@ DEFAULT_MODEL = (
     / "models"
     / "yolo26n.pt"
 )
-
 
 # ======================================================
 # PERCEPTION STARTUP
@@ -325,7 +323,7 @@ def main():
     args = parser.parse_args()
 
     # ==================================================
-    # SYNCHRONIZATION EVENTS
+    # SYNCHRONIZATION EVENTS 
     # ==================================================
 
     shutdown_event = (
@@ -368,6 +366,24 @@ def main():
 
     state.set_system(
         "STARTING"
+    )
+
+
+    # ==================================================
+    # INSPECTION LOGGING
+    # ==================================================
+
+    incident_logger = (
+        IncidentLogger()
+    )
+
+    inspection_manager = (
+        InspectionManager(
+            state=state,
+            logger=incident_logger,
+            shutdown_event=
+                shutdown_event
+        )
     )
 
     # ==================================================
@@ -421,7 +437,8 @@ def main():
 
     threads = [
         perception,
-        safety
+        safety,
+        inspection_manager
     ]
 
     ezb = None
@@ -438,6 +455,7 @@ def main():
 
         perception.start()
         safety.start()
+        inspection_manager.start()
 
         if not wait_for_perception(
             state,
