@@ -157,3 +157,58 @@ class SixRobot:
             interrupt_events=
                 interrupt_events
         )
+
+    def strafe_left(
+        self,
+        cycles=1,
+        interrupt_events=None
+    ):
+
+        return self.gait.play_action(
+            "Strafe Left",
+            cycles=cycles,
+            interrupt_events=
+                interrupt_events
+        )
+
+
+    def strafe_right(
+        self,
+        cycles=1,
+        interrupt_events=None
+    ):
+
+        return self.gait.play_action(
+            "Strafe Right",
+            cycles=cycles,
+            interrupt_events=
+                interrupt_events
+        )
+
+
+    def rotate_left(
+        self,
+        cycles=1,
+        interrupt_events=None
+    ):
+
+        return self.gait.play_action(
+            "Rotate Left",
+            cycles=cycles,
+            interrupt_events=
+                interrupt_events
+        )
+
+
+    def rotate_right(
+        self,
+        cycles=1,
+        interrupt_events=None
+    ):
+
+        return self.gait.play_action(
+            "Rotate Right",
+            cycles=cycles,
+            interrupt_events=
+                interrupt_events
+        )

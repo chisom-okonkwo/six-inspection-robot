@@ -6,7 +6,13 @@ class RobotState:
 
     def __init__(self):
 
-        self._lock = threading.Lock()
+        self._lock = (
+            threading.Lock()
+        )
+
+        # ==========================================
+        # PERSON
+        # ==========================================
 
         self.person_detected = False
         self.person_confidence = 0.0
@@ -14,28 +20,66 @@ class RobotState:
         self.person_detected_at = None
         self.person_cleared_at = None
 
+        # ==========================================
+        # OBSTACLE
+        # ==========================================
+
+        self.obstacle_detected = False
+
+        self.obstacle_label = None
+        self.obstacle_confidence = 0.0
+        self.obstacle_side = None
+
+        self.obstacle_area_ratio = 0.0
+        self.obstacle_risk = 0.0
+
+        self.obstacle_escape_direction = None
+
+        self.obstacle_left_score = 0.0
+        self.obstacle_right_score = 0.0
+
+        # ==========================================
+        # PERCEPTION
+        # ==========================================
+
         self.perception_fps = 0.0
         self.perception_ready = False
 
-        self.safety_state = "CLEAR"
-        self.motion_state = "DISABLED"
-        self.system_state = "STARTING"
+        # Lets navigation wait for genuinely fresh
+        # perception after physically moving.
+        self.perception_frame_id = 0
 
-        self.perception_status = "NOT_STARTED"
-        self.camera_status = "DISCONNECTED"
-        self.ai_status = "NOT_LOADED"
+        # ==========================================
+        # SYSTEM STATES
+        # ==========================================
+
+        self.perception_status = (
+            "NOT_STARTED"
+        )
+
+        self.camera_status = (
+            "DISCONNECTED"
+        )
+
+        self.ai_status = (
+            "NOT_LOADED"
+        )
+
+        self.safety_state = "CLEAR"
+
+        self.motion_state = (
+            "DISABLED"
+        )
+
+        self.system_state = (
+            "STARTING"
+        )
 
         self.last_error = None
 
         self.latest_frame = None
 
-        self.obstacle_detected = False
-        self.obstacle_label = None
-        self.obstacle_confidence = 0.0
-        self.obstacle_side = None
-        self.obstacle_area_ratio = 0.0
-
-    # --------------------------------------------------
+    # ==================================================
 
     def update_perception(
         self,
@@ -49,7 +93,9 @@ class RobotState:
 
         with self._lock:
 
-            previous = self.person_detected
+            previous = (
+                self.person_detected
+            )
 
             self.person_detected = (
                 person_detected
@@ -62,55 +108,142 @@ class RobotState:
             self.perception_fps = fps
             self.perception_ready = True
 
-            if person_detected and not previous:
-                self.person_detected_at = now
+            self.perception_frame_id += 1
 
-            if not person_detected and previous:
-                self.person_cleared_at = now
+            if (
+                person_detected
+                and
+                not previous
+            ):
+
+                self.person_detected_at = (
+                    now
+                )
+
+            if (
+                not person_detected
+                and
+                previous
+            ):
+
+                self.person_cleared_at = (
+                    now
+                )
 
             if frame is not None:
-                self.latest_frame = frame.copy()
 
-    # --------------------------------------------------
+                self.latest_frame = (
+                    frame.copy()
+                )
 
-    def set_safety(self, value):
+    # ==================================================
+
+    def update_obstacle(
+        self,
+        detected,
+        label=None,
+        confidence=0.0,
+        side=None,
+        area_ratio=0.0,
+        risk=0.0,
+        escape_direction=None,
+        left_score=0.0,
+        right_score=0.0
+    ):
 
         with self._lock:
-            self.safety_state = value
 
-    def set_motion(self, value):
+            self.obstacle_detected = (
+                detected
+            )
 
-        with self._lock:
-            self.motion_state = value
+            self.obstacle_label = label
 
-    def set_system(self, value):
+            self.obstacle_confidence = (
+                confidence
+            )
 
-        with self._lock:
-            self.system_state = value
+            self.obstacle_side = side
 
-    def set_error(self, error):
+            self.obstacle_area_ratio = (
+                area_ratio
+            )
 
-        with self._lock:
-            self.last_error = str(error)
+            self.obstacle_risk = risk
 
-    def set_perception_status(self, value):
+            self.obstacle_escape_direction = (
+                escape_direction
+            )
+
+            self.obstacle_left_score = (
+                left_score
+            )
+
+            self.obstacle_right_score = (
+                right_score
+            )
+
+    # ==================================================
+
+    def set_perception_status(
+        self,
+        value
+    ):
 
         with self._lock:
             self.perception_status = value
 
-
-    def set_camera_status(self, value):
+    def set_camera_status(
+        self,
+        value
+    ):
 
         with self._lock:
             self.camera_status = value
 
-
-    def set_ai_status(self, value):
+    def set_ai_status(
+        self,
+        value
+    ):
 
         with self._lock:
             self.ai_status = value
 
-    # --------------------------------------------------
+    def set_safety(
+        self,
+        value
+    ):
+
+        with self._lock:
+            self.safety_state = value
+
+    def set_motion(
+        self,
+        value
+    ):
+
+        with self._lock:
+            self.motion_state = value
+
+    def set_system(
+        self,
+        value
+    ):
+
+        with self._lock:
+            self.system_state = value
+
+    def set_error(
+        self,
+        error
+    ):
+
+        with self._lock:
+            self.last_error = str(
+                error
+            )
+
+    # ==================================================
 
     def snapshot(self):
 
@@ -129,11 +262,41 @@ class RobotState:
                 "person_cleared_at":
                     self.person_cleared_at,
 
+                "obstacle_detected":
+                    self.obstacle_detected,
+
+                "obstacle_label":
+                    self.obstacle_label,
+
+                "obstacle_confidence":
+                    self.obstacle_confidence,
+
+                "obstacle_side":
+                    self.obstacle_side,
+
+                "obstacle_area_ratio":
+                    self.obstacle_area_ratio,
+
+                "obstacle_risk":
+                    self.obstacle_risk,
+
+                "obstacle_escape_direction":
+                    self.obstacle_escape_direction,
+
+                "obstacle_left_score":
+                    self.obstacle_left_score,
+
+                "obstacle_right_score":
+                    self.obstacle_right_score,
+
                 "perception_fps":
                     self.perception_fps,
 
                 "perception_ready":
                     self.perception_ready,
+
+                "perception_frame_id":
+                    self.perception_frame_id,
 
                 "perception_status":
                     self.perception_status,
@@ -155,60 +318,18 @@ class RobotState:
 
                 "last_error":
                     self.last_error,
-                    
-                "obstacle_detected":
-                    self.obstacle_detected,
-
-                "obstacle_label":
-                    self.obstacle_label,
-
-                "obstacle_confidence":
-                    self.obstacle_confidence,
-
-                "obstacle_side":
-                    self.obstacle_side,
-
-                "obstacle_area_ratio":
-                    self.obstacle_area_ratio,
             }
+
+    # ==================================================
 
     def get_frame(self):
 
         with self._lock:
 
             if self.latest_frame is None:
+
                 return None
 
-            return self.latest_frame.copy()
-
-
-    def update_obstacle(
-        self,
-        detected,
-        label=None,
-        confidence=0.0,
-        side=None,
-        area_ratio=0.0
-    ):
-
-        with self._lock:
-
-            self.obstacle_detected = (
-                detected
-            )
-
-            self.obstacle_label = (
-                label
-            )
-
-            self.obstacle_confidence = (
-                confidence
-            )
-
-            self.obstacle_side = (
-                side
-            )
-
-            self.obstacle_area_ratio = (
-                area_ratio
+            return (
+                self.latest_frame.copy()
             )

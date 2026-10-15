@@ -1,12 +1,17 @@
 from ultralytics import YOLO
 
+from perception.object_policy import (
+    PERSON_LABEL,
+    PERSON_MIN_CONFIDENCE,
+)
+
 
 class SafetyDetector:
 
     def __init__(
         self,
         model_path="yolo26n.pt",
-        confidence=0.45
+        confidence=0.25
     ):
 
         print(
@@ -18,6 +23,8 @@ class SafetyDetector:
             model_path
         )
 
+        # This is now an inference FLOOR,
+        # not the final navigation threshold.
         self.confidence = confidence
 
         self.person_class_id = None
@@ -26,7 +33,10 @@ class SafetyDetector:
             self.model.names.items()
         ):
 
-            if name.lower() == "person":
+            if (
+                name.lower()
+                == PERSON_LABEL
+            ):
 
                 self.person_class_id = int(
                     class_id
@@ -47,10 +57,11 @@ class SafetyDetector:
         )
 
     # ==================================================
-    # FULL SCENE DETECTION
-    # ==================================================
 
-    def detect_scene(self, frame):
+    def detect_scene(
+        self,
+        frame
+    ):
 
         results = self.model.predict(
             source=frame,
@@ -65,7 +76,10 @@ class SafetyDetector:
 
         if result.boxes is None:
 
-            return detections, result
+            return (
+                detections,
+                result
+            )
 
         for box in result.boxes:
 
@@ -77,25 +91,32 @@ class SafetyDetector:
                 box.conf[0].cpu()
             )
 
-            coordinates = (
-                box.xyxy[0]
-                .cpu()
-                .tolist()
-            )
-
             x1, y1, x2, y2 = [
                 int(value)
-                for value in coordinates
+                for value
+                in (
+                    box.xyxy[0]
+                    .cpu()
+                    .tolist()
+                )
             ]
 
-            label = self.model.names[
-                class_id
-            ]
+            label = (
+                self.model.names[
+                    class_id
+                ].lower()
+            )
 
             detections.append({
-                "class_id": class_id,
-                "label": label.lower(),
-                "confidence": confidence,
+                "class_id":
+                    class_id,
+
+                "label":
+                    label,
+
+                "confidence":
+                    confidence,
+
                 "bbox": (
                     x1,
                     y1,
@@ -104,33 +125,48 @@ class SafetyDetector:
                 )
             })
 
-        return detections, result
+        return (
+            detections,
+            result
+        )
 
-    # ==================================================
-    # FILTER PEOPLE
     # ==================================================
 
     @staticmethod
-    def get_people(detections):
+    def get_people(
+        detections
+    ):
 
         return [
             detection
             for detection in detections
-            if detection["label"] == "person"
+
+            if (
+                detection["label"]
+                == PERSON_LABEL
+
+                and
+
+                detection["confidence"]
+                >= PERSON_MIN_CONFIDENCE
+            )
         ]
 
-    # ==================================================
-    # BACKWARDS COMPATIBILITY
-    # ==================================================
-
-    def detect_people(self, frame):
+    # Keep compatibility with your older test.
+    def detect_people(
+        self,
+        frame
+    ):
 
         detections, result = (
-            self.detect_scene(frame)
+            self.detect_scene(
+                frame
+            )
         )
 
-        people = self.get_people(
-            detections
+        return (
+            self.get_people(
+                detections
+            ),
+            result
         )
-
-        return people, result

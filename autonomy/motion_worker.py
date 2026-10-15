@@ -2,7 +2,9 @@ import threading
 import time
 
 
-class MotionWorker(threading.Thread):
+class MotionWorker(
+    threading.Thread
+):
 
     def __init__(
         self,
@@ -11,7 +13,8 @@ class MotionWorker(threading.Thread):
         safety_stop_event,
         obstacle_event,
         shutdown_event,
-        max_avoidance_turns=4
+        max_avoidance_maneuvers=6,
+        fresh_frames_required=2
     ):
 
         super().__init__(
@@ -34,77 +37,85 @@ class MotionWorker(threading.Thread):
             shutdown_event
         )
 
-        self.max_avoidance_turns = (
-            max_avoidance_turns
+        self.max_avoidance_maneuvers = (
+            max_avoidance_maneuvers
         )
 
-        # When an obstacle is directly centered,
-        # alternate turn directions rather than
-        # always choosing the same side.
-        self.center_turn_direction = (
-            "left"
+        self.fresh_frames_required = (
+            fresh_frames_required
         )
 
     # ==================================================
-    # TURN SELECTION
+    # FRESH PERCEPTION
     # ==================================================
 
-    def _choose_turn_direction(self):
+    def _wait_for_fresh_perception(
+        self,
+        starting_frame_id,
+        timeout=2.5
+    ):
 
-        snapshot = (
-            self.state.snapshot()
+        target = (
+            starting_frame_id
+            + self.fresh_frames_required
         )
 
-        side = snapshot[
-            "obstacle_side"
-        ]
-
-        # Obstacle appears on left:
-        # move away toward right.
-        if side == "left":
-
-            return "right"
-
-        # Obstacle appears on right:
-        # move away toward left.
-        if side == "right":
-
-            return "left"
-
-        # Centered obstacle:
-        # alternate directions.
-        direction = (
-            self.center_turn_direction
+        deadline = (
+            time.perf_counter()
+            + timeout
         )
 
-        if (
-            self.center_turn_direction
-            == "left"
+        while (
+            time.perf_counter()
+            < deadline
         ):
 
-            self.center_turn_direction = (
-                "right"
+            if (
+                self.shutdown_event.is_set()
+                or
+                self.safety_stop_event.is_set()
+            ):
+
+                return False
+
+            snapshot = (
+                self.state.snapshot()
             )
 
-        else:
+            if (
+                snapshot[
+                    "perception_frame_id"
+                ]
+                >= target
+            ):
 
-            self.center_turn_direction = (
-                "left"
+                return True
+
+            self.shutdown_event.wait(
+                0.03
             )
 
-        return direction
+        print(
+            "[NAVIGATION] "
+            "Timed out waiting for "
+            "fresh perception"
+        )
+
+        return True
 
     # ==================================================
-    # PERSON SAFETY HOLD
+    # PERSON SAFETY
     # ==================================================
 
-    def _wait_for_safety_clear(self):
+    def _wait_for_person_clear(
+        self
+    ):
+
+        self.robot.halt()
 
         self.state.set_motion(
             "PERSON_HOLD"
         )
-
-        self.robot.halt()
 
         print(
             "[MOTION] Person safety hold"
@@ -121,126 +132,344 @@ class MotionWorker(threading.Thread):
             )
 
     # ==================================================
-    # OBSTACLE AVOIDANCE
+    # MOVEMENT HELPERS
     # ==================================================
 
-    def _avoid_obstacle(
+    def _strafe(
         self,
-        turn_number
+        direction
     ):
 
-        snapshot = (
-            self.state.snapshot()
-        )
-
-        label = (
-            snapshot["obstacle_label"]
-            or "unknown"
-        )
-
-        side = (
-            snapshot["obstacle_side"]
-            or "center"
-        )
-
-        confidence = snapshot[
-            "obstacle_confidence"
-        ]
-
-        print()
-        print(
-            "[NAVIGATION] "
-            f"Obstacle: {label}"
-        )
-
-        print(
-            "[NAVIGATION] "
-            f"Confidence: "
-            f"{confidence:.2f}"
-        )
-
-        print(
-            "[NAVIGATION] "
-            f"Location: {side}"
-        )
-
-        direction = (
-            self._choose_turn_direction()
-        )
-
-        print(
-            "[NAVIGATION] "
-            f"Avoidance turn: {direction}"
-        )
-
-        self.state.set_motion(
-            "OBSTACLE_AVOID"
-        )
-
-        # ------------------------------------------
-        # Stabilize first
-        # ------------------------------------------
-
-        recovered = (
-            self.robot.stand(
-                interrupt_events=[
-                    self.safety_stop_event,
-                    self.shutdown_event
-                ]
-            )
-        )
-
-        if not recovered:
-
-            return False
-
-        # ------------------------------------------
-        # Turn
-        # ------------------------------------------
-        #
-        # IMPORTANT:
-        #
-        # obstacle_event is intentionally NOT
-        # included as an interrupt for the turn.
-        #
-        # The obstacle caused the turn. If we used
-        # obstacle_event here, the turn would cancel
-        # itself immediately.
-
-        turn_interrupts = [
+        interrupts = [
             self.safety_stop_event,
             self.shutdown_event
         ]
 
+        print(
+            "[NAVIGATION] "
+            f"Strafe {direction}"
+        )
+
         if direction == "left":
 
-            completed = (
-                self.robot.turn_left(
+            return (
+                self.robot.strafe_left(
                     cycles=1,
                     interrupt_events=
-                        turn_interrupts
+                        interrupts
                 )
             )
 
-        else:
+        return (
+            self.robot.strafe_right(
+                cycles=1,
+                interrupt_events=
+                    interrupts
+            )
+        )
 
-            completed = (
-                self.robot.turn_right(
+    # --------------------------------------------------
+
+    def _rotate(
+        self,
+        direction
+    ):
+
+        interrupts = [
+            self.safety_stop_event,
+            self.shutdown_event
+        ]
+
+        print(
+            "[NAVIGATION] "
+            f"Rotate {direction}"
+        )
+
+        if direction == "left":
+
+            return (
+                self.robot.rotate_left(
                     cycles=1,
                     interrupt_events=
-                        turn_interrupts
+                        interrupts
                 )
             )
 
-        if completed:
+        return (
+            self.robot.rotate_right(
+                cycles=1,
+                interrupt_events=
+                    interrupts
+            )
+        )
+
+    # ==================================================
+    # OBSTACLE AVOIDANCE
+    # ==================================================
+
+    def _avoid_obstacle(
+        self
+    ):
+
+        maneuver_count = 0
+
+        # Start by exploiting Six's ability
+        # to move sideways.
+        use_rotation_next = False
+
+        print()
+        print(
+            "[NAVIGATION] "
+            "Beginning obstacle avoidance"
+        )
+
+        while (
+            self.obstacle_event.is_set()
+            and
+            not self.shutdown_event.is_set()
+        ):
+
+            # Human detection ALWAYS wins.
+            if (
+                self.safety_stop_event.is_set()
+            ):
+
+                return False
+
+            if (
+                maneuver_count
+                >= self.max_avoidance_maneuvers
+            ):
+
+                self.state.set_motion(
+                    "BLOCKED"
+                )
+
+                self.robot.halt()
+
+                print()
+                print(
+                    "[NAVIGATION] "
+                    "Unable to clear corridor "
+                    "after multiple maneuvers."
+                )
+
+                print(
+                    "[NAVIGATION] "
+                    "Entering safe BLOCKED state."
+                )
+
+                # Remain safe until something
+                # changes in the scene.
+                while (
+                    self.obstacle_event.is_set()
+                    and
+                    not self.safety_stop_event.is_set()
+                    and
+                    not self.shutdown_event.is_set()
+                ):
+
+                    self.shutdown_event.wait(
+                        0.10
+                    )
+
+                return (
+                    not
+                    self.obstacle_event.is_set()
+                )
+
+            before = (
+                self.state.snapshot()
+            )
+
+            direction = (
+                before.get(
+                    "obstacle_escape_direction"
+                )
+                or
+                "left"
+            )
+
+            risk_before = (
+                before.get(
+                    "obstacle_risk"
+                )
+                or
+                0.0
+            )
+
+            frame_before = (
+                before[
+                    "perception_frame_id"
+                ]
+            )
+
+            print()
+            print(
+                "[NAVIGATION] "
+                f"Obstacle: "
+                f"{before.get('obstacle_label')}"
+            )
 
             print(
                 "[NAVIGATION] "
-                f"Avoidance turn "
-                f"{turn_number} complete"
+                f"Risk: "
+                f"{risk_before:.3f}"
             )
 
-        return completed
+            print(
+                "[NAVIGATION] "
+                f"Escape direction: "
+                f"{direction}"
+            )
+
+            self.state.set_motion(
+                "OBSTACLE_AVOID"
+            )
+
+            # Stabilize first.
+            stable = (
+                self.robot.stand(
+                    interrupt_events=[
+                        self.safety_stop_event,
+                        self.shutdown_event
+                    ]
+                )
+            )
+
+            if not stable:
+
+                return False
+
+            # ======================================
+            # SELECT MANEUVER
+            # ======================================
+
+            if use_rotation_next:
+
+                completed = (
+                    self._rotate(
+                        direction
+                    )
+                )
+
+                maneuver_name = (
+                    f"ROTATE_{direction.upper()}"
+                )
+
+            else:
+
+                completed = (
+                    self._strafe(
+                        direction
+                    )
+                )
+
+                maneuver_name = (
+                    f"STRAFE_{direction.upper()}"
+                )
+
+            if not completed:
+
+                return False
+
+            maneuver_count += 1
+
+            print(
+                "[NAVIGATION] "
+                f"Completed "
+                f"{maneuver_name}"
+            )
+
+            # ======================================
+            # WAIT FOR THE CAMERA / AI TO OBSERVE
+            # OUR NEW PHYSICAL POSITION
+            # ======================================
+
+            self._wait_for_fresh_perception(
+                frame_before
+            )
+
+            if (
+                self.safety_stop_event.is_set()
+            ):
+
+                return False
+
+            # Success:
+            # obstacle may still be visible,
+            # but no longer overlaps our corridor.
+            if (
+                not
+                self.obstacle_event.is_set()
+            ):
+
+                print(
+                    "[NAVIGATION] "
+                    "Travel corridor is clear."
+                )
+
+                return True
+
+            after = (
+                self.state.snapshot()
+            )
+
+            risk_after = (
+                after.get(
+                    "obstacle_risk"
+                )
+                or
+                0.0
+            )
+
+            print(
+                "[NAVIGATION] "
+                f"New risk: "
+                f"{risk_after:.3f}"
+            )
+
+            # ======================================
+            # DID THE MANEUVER MAKE PROGRESS?
+            # ======================================
+
+            # At least ~15% improvement.
+            progress = (
+                risk_after
+                <
+                risk_before * 0.85
+            )
+
+            if progress:
+
+                print(
+                    "[NAVIGATION] "
+                    "Obstacle risk decreased."
+                )
+
+                # Sidestepping is working.
+                # Prefer another short strafe.
+                use_rotation_next = False
+
+            else:
+
+                print(
+                    "[NAVIGATION] "
+                    "Insufficient progress; "
+                    "changing maneuver type."
+                )
+
+                # A strafe that didn't help is
+                # followed by an actual rotation.
+                #
+                # A rotation that didn't help is
+                # followed by a strafe based on the
+                # NEW camera view.
+                use_rotation_next = (
+                    not use_rotation_next
+                )
+
+        return True
 
     # ==================================================
     # THREAD
@@ -252,198 +481,82 @@ class MotionWorker(threading.Thread):
             "[MOTION] Worker online"
         )
 
-        # Normal patrol can be interrupted by:
-        #
-        # 1. Person safety event
-        # 2. Obstacle event
-        # 3. Shutdown
         normal_interrupts = [
             self.safety_stop_event,
             self.obstacle_event,
             self.shutdown_event
         ]
 
-        avoidance_turns = 0
-
         try:
 
             # ======================================
-            # INITIAL STANCE
+            # INITIALIZE
             # ======================================
 
             self.state.set_motion(
                 "INITIALIZING"
             )
 
-            # Do not let an obstacle prevent Six
-            # from reaching a stable initial stance.
-            completed = (
-                self.robot.stand(
-                    interrupt_events=[
-                        self.safety_stop_event,
-                        self.shutdown_event
-                    ]
-                )
+            self.robot.stand(
+                interrupt_events=[
+                    self.safety_stop_event,
+                    self.shutdown_event
+                ]
             )
 
-            if not completed:
-
-                self.robot.halt()
-
             # ======================================
-            # MAIN AUTONOMOUS NAVIGATION LOOP
+            # CONTROL LOOP
             # ======================================
 
-            while not self.shutdown_event.is_set():
+            while (
+                not
+                self.shutdown_event.is_set()
+            ):
 
                 # ==================================
-                # PRIORITY 1:
-                # HUMAN SAFETY
+                # PRIORITY 1 — HUMAN SAFETY
                 # ==================================
 
-                if self.safety_stop_event.is_set():
+                if (
+                    self.safety_stop_event.is_set()
+                ):
 
-                    avoidance_turns = 0
+                    self._wait_for_person_clear()
 
-                    halt_time = (
-                        time.perf_counter()
-                    )
+                    if (
+                        self.shutdown_event.is_set()
+                    ):
 
-                    self._wait_for_safety_clear()
-
-                    snapshot = (
-                        self.state.snapshot()
-                    )
-
-                    detection_time = snapshot[
-                        "person_detected_at"
-                    ]
-
-                    if detection_time is not None:
-
-                        latency_ms = (
-                            halt_time
-                            - detection_time
-                        ) * 1000
-
-                        print(
-                            "[MOTION] "
-                            "Software preemption "
-                            f"latency: "
-                            f"{latency_ms:.1f} ms"
-                        )
-
-                    if self.shutdown_event.is_set():
                         break
-
-                    # ----------------------------------
-                    # Recover stance after person leaves
-                    # ----------------------------------
 
                     self.state.set_motion(
                         "RECOVERING"
                     )
 
-                    recovered = (
-                        self.robot.stand(
-                            interrupt_events=[
-                                self.safety_stop_event,
-                                self.shutdown_event
-                            ]
-                        )
-                    )
-
-                    if not recovered:
-
-                        self.robot.halt()
-
-                    continue
-
-                # ==================================
-                # PRIORITY 2:
-                # OBSTACLE AVOIDANCE
-                # ==================================
-
-                if self.obstacle_event.is_set():
-
-                    avoidance_turns += 1
-
-                    # ----------------------------------
-                    # Avoid infinite spinning
-                    # ----------------------------------
-
-                    if (
-                        avoidance_turns
-                        > self.max_avoidance_turns
-                    ):
-
-                        self.state.set_motion(
-                            "BLOCKED"
-                        )
-
-                        self.robot.halt()
-
-                        print()
-                        print(
-                            "[NAVIGATION] "
-                            "Robot appears blocked."
-                        )
-
-                        print(
-                            "[NAVIGATION] "
-                            "Waiting for the path "
-                            "to clear."
-                        )
-
-                        # Wait until:
-                        #
-                        # obstacle clears,
-                        # a person appears,
-                        # or shutdown occurs.
-                        while (
-                            self.obstacle_event.is_set()
-                            and
-                            not self.safety_stop_event.is_set()
-                            and
-                            not self.shutdown_event.is_set()
-                        ):
-
-                            self.shutdown_event.wait(
-                                0.05
-                            )
-
-                        avoidance_turns = 0
-
-                        continue
-
-                    # ----------------------------------
-                    # Perform one avoidance turn
-                    # ----------------------------------
-
-                    completed = (
-                        self._avoid_obstacle(
-                            avoidance_turns
-                        )
-                    )
-
-                    if not completed:
-
-                        self.robot.halt()
-
-                    # Allow perception a brief moment
-                    # to observe the new heading.
-                    self.shutdown_event.wait(
-                        0.20
+                    self.robot.stand(
+                        interrupt_events=[
+                            self.safety_stop_event,
+                            self.shutdown_event
+                        ]
                     )
 
                     continue
 
                 # ==================================
-                # PRIORITY 3:
-                # NORMAL PATROL
+                # PRIORITY 2 — OBSTACLE
                 # ==================================
 
-                avoidance_turns = 0
+                if (
+                    self.obstacle_event.is_set()
+                ):
+
+                    self._avoid_obstacle()
+
+                    continue
+
+                # ==================================
+                # PRIORITY 3 — PATROL
+                # ==================================
 
                 self.state.set_motion(
                     "PATROLLING"
@@ -459,11 +572,6 @@ class MotionWorker(threading.Thread):
 
                 if not completed:
 
-                    # Something interrupted forward
-                    # motion. Do not automatically
-                    # return to neutral yet because
-                    # the cause may be a person or
-                    # obstacle.
                     self.robot.halt()
 
                     continue

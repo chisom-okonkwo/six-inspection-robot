@@ -17,9 +17,15 @@ class PerceptionWorker(threading.Thread):
         ready_event,
         startup_failed_event,
         model_path="yolo26n.pt",
-        confidence=0.45,
+
+        # This is the YOLO inference floor.
+        # Person and obstacle policies apply
+        # their own stricter thresholds later.
+        confidence=0.25,
+
         detection_frames=2,
         clear_frames=4,
+
         obstacle_frames=2,
         obstacle_clear_frames=3
     ):
@@ -33,9 +39,11 @@ class PerceptionWorker(threading.Thread):
 
         self.person_event = person_event
         self.obstacle_event = obstacle_event
+
         self.shutdown_event = shutdown_event
 
         self.ready_event = ready_event
+
         self.startup_failed_event = (
             startup_failed_event
         )
@@ -44,17 +52,103 @@ class PerceptionWorker(threading.Thread):
         self.confidence = confidence
 
         # Number of consecutive frames required
-        # before confirming a person.
-        self.detection_frames = detection_frames
+        # to confirm a person.
+        self.detection_frames = (
+            detection_frames
+        )
 
-        # Number of clear frames required
-        # before clearing a person detection.
-        self.clear_frames = clear_frames
+        # Number of consecutive clear frames
+        # required to clear person state.
+        self.clear_frames = (
+            clear_frames
+        )
 
-        # Same concept for obstacles.
-        self.obstacle_frames = obstacle_frames
+        # Same hysteresis mechanism for obstacles.
+        self.obstacle_frames = (
+            obstacle_frames
+        )
+
         self.obstacle_clear_frames = (
             obstacle_clear_frames
+        )
+
+    # ==================================================
+    # INTERNAL STATE UPDATE
+    # ==================================================
+
+    def _update_obstacle_state(
+        self,
+        obstacle_analysis
+    ):
+        """
+        Copy the obstacle analyzer's output into
+        the shared RobotState.
+
+        obstacle_analysis has the structure:
+
+        {
+            "primary": {...},
+            "risk": ...,
+            "recommended_escape": ...,
+            "left_score": ...,
+            "right_score": ...,
+            "candidate_count": ...
+        }
+        """
+
+        if obstacle_analysis is None:
+
+            if not self.obstacle_event.is_set():
+
+                self.state.update_obstacle(
+                    detected=False
+                )
+
+            # If hysteresis still considers an obstacle
+            # active, retain the previous metadata.
+            return
+
+        primary = (
+            obstacle_analysis[
+                "primary"
+            ]
+        )
+
+        self.state.update_obstacle(
+            detected=
+                self.obstacle_event.is_set(),
+
+            label=
+                primary["label"],
+
+            confidence=
+                primary["confidence"],
+
+            side=
+                primary["side"],
+
+            area_ratio=
+                primary["area_ratio"],
+
+            risk=
+                obstacle_analysis[
+                    "risk"
+                ],
+
+            escape_direction=
+                obstacle_analysis[
+                    "recommended_escape"
+                ],
+
+            left_score=
+                obstacle_analysis[
+                    "left_score"
+                ],
+
+            right_score=
+                obstacle_analysis[
+                    "right_score"
+                ]
         )
 
     # ==================================================
@@ -84,11 +178,16 @@ class PerceptionWorker(threading.Thread):
                 "[PERCEPTION] Loading AI model..."
             )
 
-            load_start = time.perf_counter()
+            load_start = (
+                time.perf_counter()
+            )
 
             detector = SafetyDetector(
-                model_path=self.model_path,
-                confidence=self.confidence
+                model_path=
+                    self.model_path,
+
+                confidence=
+                    self.confidence
             )
 
             obstacle_analyzer = (
@@ -128,7 +227,9 @@ class PerceptionWorker(threading.Thread):
                 "[PERCEPTION] Connecting camera..."
             )
 
-            camera_start = time.perf_counter()
+            camera_start = (
+                time.perf_counter()
+            )
 
             camera.connect()
 
@@ -151,12 +252,17 @@ class PerceptionWorker(threading.Thread):
             # ==========================================
 
             print(
-                "[PERCEPTION] Waiting for first frame..."
+                "[PERCEPTION] "
+                "Waiting for first frame..."
             )
 
-            frame_start = time.perf_counter()
+            frame_start = (
+                time.perf_counter()
+            )
 
-            first_frame = camera.read_frame()
+            first_frame = (
+                camera.read_frame()
+            )
 
             frame_time = (
                 time.perf_counter()
@@ -164,12 +270,13 @@ class PerceptionWorker(threading.Thread):
             )
 
             print(
-                "[PERCEPTION] First frame received "
+                "[PERCEPTION] "
+                "First frame received "
                 f"in {frame_time:.2f}s"
             )
 
             # ==========================================
-            # STEP 4 — FIRST AI INFERENCE / WARMUP
+            # STEP 4 — FIRST AI INFERENCE
             # ==========================================
 
             print(
@@ -181,23 +288,31 @@ class PerceptionWorker(threading.Thread):
                 time.perf_counter()
             )
 
-            # Detect the complete scene once.
+            # ------------------------------------------
+            # One YOLO scene inference
+            # ------------------------------------------
+
             detections, result = (
                 detector.detect_scene(
                     first_frame
                 )
             )
 
-            # Separate people from the complete
-            # detection list.
-            people = detector.get_people(
-                detections
+            # ------------------------------------------
+            # Person policy
+            # ------------------------------------------
+
+            people = (
+                detector.get_people(
+                    detections
+                )
             )
 
-            # Analyze non-person detections to
-            # determine whether something blocks
-            # the robot's path.
-            obstacle = (
+            # ------------------------------------------
+            # Obstacle policy
+            # ------------------------------------------
+
+            obstacle_analysis = (
                 obstacle_analyzer.analyze(
                     first_frame,
                     detections
@@ -210,9 +325,9 @@ class PerceptionWorker(threading.Thread):
             )
 
             print(
-                "[PERCEPTION] First inference "
-                f"completed in "
-                f"{inference_time:.2f}s"
+                "[PERCEPTION] "
+                "First inference completed "
+                f"in {inference_time:.2f}s"
             )
 
             # ==========================================
@@ -225,12 +340,13 @@ class PerceptionWorker(threading.Thread):
 
                 best_person_confidence = max(
                     detection["confidence"]
-                    for detection in people
+                    for detection
+                    in people
                 )
 
-                # Fail-safe startup behavior:
-                # if a person is already visible when
-                # autonomy starts, do not begin moving.
+                # Fail-safe:
+                # If a person exists at startup,
+                # autonomous movement must not begin.
                 self.person_event.set()
 
             else:
@@ -241,20 +357,18 @@ class PerceptionWorker(threading.Thread):
             # INITIAL OBSTACLE STATE
             # ==========================================
 
-            if obstacle is not None:
+            if (
+                obstacle_analysis
+                is not None
+            ):
 
+                # Startup is deliberately conservative:
+                # if an obstacle already blocks the
+                # corridor, treat it as confirmed.
                 self.obstacle_event.set()
 
-                self.state.update_obstacle(
-                    detected=True,
-                    label=obstacle["label"],
-                    confidence=(
-                        obstacle["confidence"]
-                    ),
-                    side=obstacle["side"],
-                    area_ratio=(
-                        obstacle["area_ratio"]
-                    )
+                self._update_obstacle_state(
+                    obstacle_analysis
                 )
 
             else:
@@ -266,7 +380,7 @@ class PerceptionWorker(threading.Thread):
                 )
 
             # ==========================================
-            # STORE FIRST ANNOTATED FRAME
+            # STORE FIRST FRAME
             # ==========================================
 
             annotated_frame = (
@@ -291,7 +405,7 @@ class PerceptionWorker(threading.Thread):
             )
 
             # Tell autonomous_app.py that
-            # perception startup succeeded.
+            # perception initialization succeeded.
             self.ready_event.set()
 
             print()
@@ -301,28 +415,32 @@ class PerceptionWorker(threading.Thread):
             print()
 
             # ==========================================
-            # NORMAL PERCEPTION LOOP
+            # NORMAL LOOP STATE
             # ==========================================
 
-            # Prime counters based on the
-            # startup inference.
             detection_counter = (
-                1 if people else 0
+                1
+                if people
+                else 0
             )
 
             clear_counter = (
-                0 if people else 1
+                0
+                if people
+                else 1
             )
 
             obstacle_counter = (
                 1
-                if obstacle is not None
+                if obstacle_analysis
+                is not None
                 else 0
             )
 
             obstacle_clear_counter = (
                 0
-                if obstacle is not None
+                if obstacle_analysis
+                is not None
                 else 1
             )
 
@@ -332,17 +450,26 @@ class PerceptionWorker(threading.Thread):
                 time.perf_counter()
             )
 
-            while not self.shutdown_event.is_set():
+            # ==========================================
+            # NORMAL PERCEPTION LOOP
+            # ==========================================
 
-                # ==================================
+            while (
+                not
+                self.shutdown_event.is_set()
+            ):
+
+                # --------------------------------------
                 # CAMERA
-                # ==================================
+                # --------------------------------------
 
-                frame = camera.read_frame()
+                frame = (
+                    camera.read_frame()
+                )
 
-                # ==================================
-                # AI — ONE SCENE INFERENCE
-                # ==================================
+                # --------------------------------------
+                # YOLO — ONE INFERENCE
+                # --------------------------------------
 
                 detections, result = (
                     detector.detect_scene(
@@ -350,32 +477,37 @@ class PerceptionWorker(threading.Thread):
                     )
                 )
 
-                # ==================================
+                # ======================================
                 # PERSON ANALYSIS
-                # ==================================
+                # ======================================
 
-                people = detector.get_people(
-                    detections
+                people = (
+                    detector.get_people(
+                        detections
+                    )
                 )
 
                 raw_person_detected = (
                     len(people) > 0
                 )
 
-                best_person_confidence = 0.0
+                best_person_confidence = (
+                    0.0
+                )
 
                 if people:
 
                     best_person_confidence = max(
                         detection["confidence"]
-                        for detection in people
+                        for detection
+                        in people
                     )
 
-                # ==================================
+                # ======================================
                 # OBSTACLE ANALYSIS
-                # ==================================
+                # ======================================
 
-                obstacle = (
+                obstacle_analysis = (
                     obstacle_analyzer.analyze(
                         frame,
                         detections
@@ -383,17 +515,21 @@ class PerceptionWorker(threading.Thread):
                 )
 
                 raw_obstacle_detected = (
-                    obstacle is not None
+                    obstacle_analysis
+                    is not None
                 )
 
-                # ==================================
+                # ======================================
                 # FPS
-                # ==================================
+                # ======================================
 
-                now = time.perf_counter()
+                now = (
+                    time.perf_counter()
+                )
 
                 frame_time = (
-                    now - previous_time
+                    now
+                    - previous_time
                 )
 
                 previous_time = now
@@ -412,16 +548,16 @@ class PerceptionWorker(threading.Thread):
 
                 else:
 
-                    # Exponential moving average.
                     fps = (
                         0.90 * fps
-                        + 0.10
+                        +
+                        0.10
                         * instantaneous_fps
                     )
 
-                # ==================================
+                # ======================================
                 # PERSON HYSTERESIS
-                # ==================================
+                # ======================================
 
                 if raw_person_detected:
 
@@ -433,10 +569,13 @@ class PerceptionWorker(threading.Thread):
                     clear_counter += 1
                     detection_counter = 0
 
-                # Confirm person.
+                # --------------------------------------
+                # Confirm person
+                # --------------------------------------
 
                 if (
-                    not self.person_event.is_set()
+                    not
+                    self.person_event.is_set()
                     and
                     detection_counter
                     >= self.detection_frames
@@ -449,7 +588,9 @@ class PerceptionWorker(threading.Thread):
                         "Confirmed person detection"
                     )
 
-                # Confirm person cleared.
+                # --------------------------------------
+                # Confirm person cleared
+                # --------------------------------------
 
                 if (
                     self.person_event.is_set()
@@ -465,24 +606,29 @@ class PerceptionWorker(threading.Thread):
                         "Person no longer visible"
                     )
 
-                # ==================================
+                # ======================================
                 # OBSTACLE HYSTERESIS
-                # ==================================
+                # ======================================
 
                 if raw_obstacle_detected:
 
                     obstacle_counter += 1
+
                     obstacle_clear_counter = 0
 
                 else:
 
                     obstacle_clear_counter += 1
+
                     obstacle_counter = 0
 
-                # Confirm obstacle.
+                # --------------------------------------
+                # Confirm obstacle
+                # --------------------------------------
 
                 if (
-                    not self.obstacle_event.is_set()
+                    not
+                    self.obstacle_event.is_set()
                     and
                     obstacle_counter
                     >= self.obstacle_frames
@@ -490,12 +636,44 @@ class PerceptionWorker(threading.Thread):
 
                     self.obstacle_event.set()
 
+                    print()
                     print(
                         "[PERCEPTION] "
                         "Obstacle confirmed"
                     )
 
-                # Confirm obstacle cleared.
+                    if (
+                        obstacle_analysis
+                        is not None
+                    ):
+
+                        primary = (
+                            obstacle_analysis[
+                                "primary"
+                            ]
+                        )
+
+                        print(
+                            "[PERCEPTION] "
+                            f"Object: "
+                            f"{primary['label']}"
+                        )
+
+                        print(
+                            "[PERCEPTION] "
+                            f"Risk: "
+                            f"{obstacle_analysis['risk']:.3f}"
+                        )
+
+                        print(
+                            "[PERCEPTION] "
+                            "Recommended escape: "
+                            f"{obstacle_analysis['recommended_escape']}"
+                        )
+
+                # --------------------------------------
+                # Confirm obstacle cleared
+                # --------------------------------------
 
                 if (
                     self.obstacle_event.is_set()
@@ -512,51 +690,28 @@ class PerceptionWorker(threading.Thread):
 
                     print(
                         "[PERCEPTION] "
-                        "Path appears clear"
+                        "Travel corridor clear"
                     )
 
-                # ==================================
-                # UPDATE OBSTACLE STATE
-                # ==================================
+                # ======================================
+                # UPDATE OBSTACLE SHARED STATE
+                # ======================================
 
-                if obstacle is not None:
+                self._update_obstacle_state(
+                    obstacle_analysis
+                )
 
-                    self.state.update_obstacle(
-                        detected=
-                            self.obstacle_event.is_set(),
-
-                        label=
-                            obstacle["label"],
-
-                        confidence=
-                            obstacle["confidence"],
-
-                        side=
-                            obstacle["side"],
-
-                        area_ratio=
-                            obstacle["area_ratio"]
-                    )
-
-                elif not self.obstacle_event.is_set():
-
-                    self.state.update_obstacle(
-                        detected=False
-                    )
-
-                # If obstacle_event is still set but
-                # this individual frame is clear,
-                # intentionally keep the previous
-                # obstacle metadata until hysteresis
-                # officially declares the path clear.
-
-                # ==================================
-                # UPDATE PERSON / FRAME STATE
-                # ==================================
+                # ======================================
+                # ANNOTATED FRAME
+                # ======================================
 
                 annotated_frame = (
                     result.plot()
                 )
+
+                # ======================================
+                # UPDATE SHARED PERCEPTION STATE
+                # ======================================
 
                 self.state.update_perception(
                     person_detected=
@@ -578,7 +733,11 @@ class PerceptionWorker(threading.Thread):
                 "[PERCEPTION] "
                 "START/RUNTIME ERROR:"
             )
-            print(error)
+
+            print(
+                error
+            )
+
             print()
 
             self.state.set_error(
@@ -591,8 +750,8 @@ class PerceptionWorker(threading.Thread):
 
             self.startup_failed_event.set()
 
-            # Fail safe:
-            # perception failure should prevent
+            # Fail-safe:
+            # perception failure disables
             # autonomous movement.
             self.person_event.set()
 

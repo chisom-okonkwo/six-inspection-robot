@@ -311,7 +311,7 @@ def main():
     parser.add_argument(
         "--confidence",
         type=float,
-        default=0.45
+        default=0.25
     )
 
     parser.add_argument(
