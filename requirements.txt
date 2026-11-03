@@ -1,2 +1,3 @@
 numpy
 opencv-python
+ultralytics>=8.4.0,<9.0
