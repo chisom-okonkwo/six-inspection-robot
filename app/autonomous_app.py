@@ -10,17 +10,23 @@ from robot.ezb import EZB
 from robot.six_robot import SixRobot
 
 from autonomy.robot_state import RobotState
-from perception.perception_worker import (PerceptionWorker)
-from autonomy.safety_supervisor import (SafetySupervisor)
+from autonomy.safety_supervisor import SafetySupervisor
 from autonomy.motion_worker import MotionWorker
+from autonomy.progress_monitor import ProgressMonitor
+from autonomy.ultrasonic_worker import UltrasonicWorker
 
-from inspection.incident_logger import (IncidentLogger)
+from perception.perception_worker import (
+    PerceptionWorker
+)
 
-from inspection.inspection_manager import (InspectionManager)
+from inspection.incident_logger import (
+    IncidentLogger
+)
 
-# ======================================================
-# PATHS
-# ======================================================
+from inspection.inspection_manager import (
+    InspectionManager
+)
+
 
 PROJECT_ROOT = (
     Path(__file__)
@@ -35,8 +41,9 @@ DEFAULT_MODEL = (
     / "yolo26n.pt"
 )
 
+
 # ======================================================
-# PERCEPTION STARTUP
+# STARTUP WAIT
 # ======================================================
 
 def wait_for_perception(
@@ -46,30 +53,20 @@ def wait_for_perception(
     shutdown_event,
     timeout=120
 ):
-
     print()
     print(
         "[SYSTEM] Waiting for perception "
         "pipeline to initialize..."
     )
 
-    print(
-        f"[SYSTEM] Startup timeout: "
-        f"{timeout}s"
-    )
-
     start = time.perf_counter()
+    last_status = start
 
-    last_status_time = start
-
-    while not shutdown_event.is_set():
-
-        # ======================================
-        # SUCCESS
-        # ======================================
-
+    while (
+        not
+        shutdown_event.is_set()
+    ):
         if ready_event.is_set():
-
             elapsed = (
                 time.perf_counter()
                 - start
@@ -82,31 +79,21 @@ def wait_for_perception(
 
             return True
 
-        # ======================================
-        # FAILURE
-        # ======================================
-
         if failed_event.is_set():
-
             snapshot = (
                 state.snapshot()
             )
 
             print(
-                "[SYSTEM] Perception startup "
-                "failed."
+                "[SYSTEM] "
+                "Perception startup failed:"
             )
 
             print(
-                "[SYSTEM] Error:",
                 snapshot["last_error"]
             )
 
             return False
-
-        # ======================================
-        # TIMEOUT
-        # ======================================
 
         elapsed = (
             time.perf_counter()
@@ -114,15 +101,13 @@ def wait_for_perception(
         )
 
         if elapsed >= timeout:
-
             snapshot = (
                 state.snapshot()
             )
 
-            print()
             print(
-                "[SYSTEM] Perception startup "
-                "timed out."
+                "[SYSTEM] "
+                "Perception startup timed out."
             )
 
             print(
@@ -131,30 +116,22 @@ def wait_for_perception(
             )
 
             print(
+                "[SYSTEM] Depth:",
+                snapshot["depth_status"]
+            )
+
+            print(
                 "[SYSTEM] Camera:",
                 snapshot["camera_status"]
             )
 
-            print(
-                "[SYSTEM] Perception:",
-                snapshot[
-                    "perception_status"
-                ]
-            )
-
             return False
 
-        # ======================================
-        # PERIODIC STATUS
-        # ======================================
-
-        now = time.perf_counter()
-
         if (
-            now - last_status_time
+            time.perf_counter()
+            - last_status
             >= 5.0
         ):
-
             snapshot = (
                 state.snapshot()
             )
@@ -162,16 +139,15 @@ def wait_for_perception(
             print(
                 "[SYSTEM] Still starting... "
                 f"AI={snapshot['ai_status']} "
-                f"Camera="
-                f"{snapshot['camera_status']} "
-                f"Perception="
-                f"{snapshot['perception_status']} "
+                f"Depth={snapshot['depth_status']} "
+                f"Camera={snapshot['camera_status']} "
                 f"Elapsed={elapsed:.1f}s"
             )
 
-            last_status_time = now
+            last_status = (
+                time.perf_counter()
+            )
 
-        # Avoid busy-spinning.
         shutdown_event.wait(
             0.10
         )
@@ -188,21 +164,49 @@ def draw_status(
     snapshot,
     mode
 ):
-
     obstacle_label = (
         snapshot["obstacle_label"]
         if snapshot["obstacle_detected"]
         else "NO"
     )
 
-    obstacle_side = (
-        snapshot["obstacle_side"]
-        if snapshot["obstacle_detected"]
+    obstacle_distance = (
+        snapshot[
+            "obstacle_distance_m"
+        ]
+    )
+
+    corridor_depth = (
+        snapshot[
+            "corridor_depth_m"
+        ]
+    )
+
+    obstacle_distance_text = (
+        f"{obstacle_distance:.2f}m"
+        if obstacle_distance is not None
+        else "-"
+    )
+
+    corridor_depth_text = (
+        f"{corridor_depth:.2f}m"
+        if corridor_depth is not None
+        else "-"
+    )
+
+    ultrasonic_cm = (
+        snapshot.get(
+            "ultrasonic_distance_cm"
+        )
+    )
+
+    ultrasonic_text = (
+        f"{ultrasonic_cm:.1f} cm"
+        if ultrasonic_cm is not None
         else "-"
     )
 
     lines = [
-
         f"Mode: {mode.upper()}",
 
         (
@@ -211,13 +215,27 @@ def draw_status(
         ),
 
         (
-            "Camera: "
-            f"{snapshot['camera_status']}"
+            "Depth: "
+            f"{snapshot['depth_status']}"
         ),
 
         (
-            "Perception: "
-            f"{snapshot['perception_status']}"
+            "Ultrasonic: "
+            f"{snapshot.get('ultrasonic_status', '-')}"
+        ),
+
+        (
+            "Range: "
+            f"{ultrasonic_text}"
+        ),
+
+        (
+            "Range navigation: YES"
+            if snapshot.get(
+                "ultrasonic_navigation_confirmed",
+                False
+            )
+            else "Range navigation: NO"
         ),
 
         (
@@ -227,23 +245,23 @@ def draw_status(
         ),
 
         (
-            "Person confidence: "
-            f"{snapshot['person_confidence']:.2f}"
-        ),
-
-        (
-            "Safety: "
-            f"{snapshot['safety_state']}"
-        ),
-
-        (
             "Obstacle: "
             f"{obstacle_label}"
         ),
 
         (
-            "Obstacle side: "
-            f"{obstacle_side}"
+            "Obstacle distance: "
+            f"{obstacle_distance_text}"
+        ),
+
+        (
+            "Forward depth: "
+            f"{corridor_depth_text}"
+        ),
+
+        (
+            "Escape: "
+            f"{snapshot['obstacle_escape_direction']}"
         ),
 
         (
@@ -252,26 +270,35 @@ def draw_status(
         ),
 
         (
+            "Progress: "
+            f"{snapshot['progress_status']}"
+        ),
+
+        (
+            "Optical flow: "
+            f"{snapshot['visual_motion_score']:.2f}"
+        ),
+
+        (
             "Vision FPS: "
             f"{snapshot['perception_fps']:.1f}"
         ),
     ]
 
-    y = 25
+    y = 24
 
     for line in lines:
-
         cv2.putText(
             frame,
             line,
             (10, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.50,
             (255, 255, 255),
-            2
+            1
         )
 
-        y += 25
+        y += 22
 
     return frame
 
@@ -281,7 +308,6 @@ def draw_status(
 # ======================================================
 
 def main():
-
     parser = argparse.ArgumentParser(
         description=(
             "Autonomous EZ-Robot Six "
@@ -295,19 +321,17 @@ def main():
             "observe",
             "patrol"
         ],
-        default="observe",
-        help=(
-            "observe = AI/perception only. "
-            "patrol = autonomous movement "
-            "with obstacle avoidance."
-        )
+        default="observe"
     )
 
     parser.add_argument(
         "--model",
-        default=str(DEFAULT_MODEL)
+        default=str(
+            DEFAULT_MODEL
+        )
     )
 
+    # Low YOLO candidate floor.
     parser.add_argument(
         "--confidence",
         type=float,
@@ -323,33 +347,46 @@ def main():
     args = parser.parse_args()
 
     # ==================================================
-    # SYNCHRONIZATION EVENTS 
+    # EVENTS
     # ==================================================
 
     shutdown_event = (
         threading.Event()
     )
 
-    # Raw/confirmed human detection from
-    # perception.
     person_event = (
         threading.Event()
     )
 
-    # Confirmed obstacle detection from
-    # perception.
-    obstacle_event = (
+    # Camera-only semantic candidate:
+    # "I see a configured navigation object such as
+    # a backpack/book in the travel corridor."
+    vision_obstacle_event = (
         threading.Event()
     )
 
-    # Controlled by SafetySupervisor.
-    # This deliberately remains separate
-    # from person_event.
+    # Camera + ultrasonic confirmation:
+    # "The configured object is now physically close
+    # enough that MotionWorker should avoid it."
+    navigation_obstacle_event = (
+        threading.Event()
+    )
+
+    # Ultrasonic-only close-surface event:
+    # used for walls / unclassified surfaces at the
+    # dedicated wall threshold.
+    wall_event = (
+        threading.Event()
+    )
+
+    stuck_event = (
+        threading.Event()
+    )
+
     safety_stop_event = (
         threading.Event()
     )
 
-    # Perception startup synchronization.
     perception_ready_event = (
         threading.Event()
     )
@@ -359,7 +396,7 @@ def main():
     )
 
     # ==================================================
-    # SHARED STATE
+    # STATE
     # ==================================================
 
     state = RobotState()
@@ -367,7 +404,6 @@ def main():
     state.set_system(
         "STARTING"
     )
-
 
     # ==================================================
     # INSPECTION LOGGING
@@ -387,74 +423,90 @@ def main():
     )
 
     # ==================================================
-    # PERCEPTION
+    # NON-MOTOR WORKERS
     # ==================================================
 
-    perception = PerceptionWorker(
-        state=state,
+    perception = (
+        PerceptionWorker(
+            state=state,
 
-        person_event=
-            person_event,
+            person_event=
+                person_event,
 
-        obstacle_event=
-            obstacle_event,
+            obstacle_event=
+                vision_obstacle_event,
 
-        shutdown_event=
-            shutdown_event,
+            shutdown_event=
+                shutdown_event,
 
-        ready_event=
-            perception_ready_event,
+            ready_event=
+                perception_ready_event,
 
-        startup_failed_event=
-            perception_failed_event,
+            startup_failed_event=
+                perception_failed_event,
 
-        model_path=
-            args.model,
+            model_path=
+                args.model,
 
-        confidence=
-            args.confidence
+            confidence=
+                args.confidence
+        )
     )
 
-    # ==================================================
-    # SAFETY
-    # ==================================================
+    safety = (
+        SafetySupervisor(
+            state=state,
 
-    safety = SafetySupervisor(
-        state=state,
+            person_event=
+                person_event,
 
-        person_event=
-            person_event,
+            safety_stop_event=
+                safety_stop_event,
 
-        safety_stop_event=
-            safety_stop_event,
+            shutdown_event=
+                shutdown_event,
 
-        shutdown_event=
-            shutdown_event,
+            clear_delay=
+                args.clear_delay
+        )
+    )
 
-        clear_delay=
-            args.clear_delay
+    progress = (
+        ProgressMonitor(
+            state=state,
+
+            stuck_event=
+                stuck_event,
+
+            obstacle_event=
+                navigation_obstacle_event,
+
+            safety_stop_event=
+                safety_stop_event,
+
+            shutdown_event=
+                shutdown_event
+        )
     )
 
     threads = [
         perception,
         safety,
+        progress,
         inspection_manager
     ]
 
     ezb = None
     six = None
+    ultrasonic = None
     motion = None
 
     emergency_release = False
 
     try:
-
-        # ==============================================
-        # START PERCEPTION + SAFETY FIRST
-        # ==============================================
-
         perception.start()
         safety.start()
+        progress.start()
         inspection_manager.start()
 
         if not wait_for_perception(
@@ -464,18 +516,16 @@ def main():
             shutdown_event,
             timeout=120
         ):
-
             raise RuntimeError(
-                "Perception did not become "
-                "ready successfully."
+                "Perception did not "
+                "become ready."
             )
 
         # ==============================================
-        # PATROL MODE
+        # PATROL
         # ==============================================
 
         if args.mode == "patrol":
-
             print()
             print(
                 "[SYSTEM] Connecting "
@@ -490,6 +540,60 @@ def main():
                 ezb
             )
 
+            # ==========================================
+            # ULTRASONIC RANGE FUSION
+            # ==========================================
+            #
+            # Backpack/book navigation:
+            #     camera candidate
+            #       +
+            #     HC-SR04 <= 45 cm
+            #       ->
+            #     navigation_obstacle_event
+            #
+            # Wall / unknown close surface:
+            #     HC-SR04 <= 15 cm
+            #       ->
+            #     wall_event
+
+            ultrasonic = UltrasonicWorker(
+                ezb=ezb,
+                state=state,
+
+                vision_obstacle_event=
+                    vision_obstacle_event,
+
+                navigation_obstacle_event=
+                    navigation_obstacle_event,
+
+                wall_event=
+                    wall_event,
+
+                shutdown_event=
+                    shutdown_event,
+
+                trigger_port=20,
+                echo_port=21,
+
+                object_trigger_distance_cm=45,
+                object_clear_distance_cm=55,
+
+                wall_trigger_distance_cm=15,
+                wall_clear_distance_cm=22,
+
+                object_confirm_readings=2,
+                object_clear_readings=2,
+
+                wall_confirm_readings=2,
+                wall_clear_readings=2
+            )
+
+            threads.append(
+                ultrasonic
+            )
+
+            ultrasonic.start()
+
             motion = MotionWorker(
                 robot=six,
 
@@ -499,7 +603,13 @@ def main():
                     safety_stop_event,
 
                 obstacle_event=
-                    obstacle_event,
+                    navigation_obstacle_event,
+
+                wall_event=
+                    wall_event,
+
+                stuck_event=
+                    stuck_event,
 
                 shutdown_event=
                     shutdown_event
@@ -512,30 +622,30 @@ def main():
             motion.start()
 
         else:
-
             state.set_motion(
                 "DISABLED"
             )
-
-        # ==============================================
-        # SYSTEM READY
-        # ==============================================
 
         state.set_system(
             "RUNNING"
         )
 
         print()
-        print("==============================")
-        print(" AUTONOMOUS SAFETY SYSTEM")
-        print("==============================")
+        print(
+            "=============================="
+        )
+        print(
+            " AUTONOMOUS SAFETY SYSTEM"
+        )
+        print(
+            "=============================="
+        )
         print()
 
         print(
             f"Mode: {args.mode.upper()}"
         )
 
-        print()
         print(
             "Q = graceful shutdown"
         )
@@ -544,20 +654,19 @@ def main():
             "E = emergency servo release"
         )
 
-        print()
-
         # ==============================================
-        # MAIN UI LOOP
+        # UI LOOP
         # ==============================================
 
-        while not shutdown_event.is_set():
-
+        while (
+            not
+            shutdown_event.is_set()
+        ):
             frame = (
                 state.get_frame()
             )
 
             if frame is not None:
-
                 snapshot = (
                     state.snapshot()
                 )
@@ -579,30 +688,19 @@ def main():
                 & 0xFF
             )
 
-            # ------------------------------------------
-            # GRACEFUL QUIT
-            # ------------------------------------------
-
             if key == ord("q"):
-
                 print(
                     "[SYSTEM] "
                     "Graceful shutdown requested"
                 )
 
                 shutdown_event.set()
-
                 break
 
-            # ------------------------------------------
-            # EMERGENCY RELEASE
-            # ------------------------------------------
-
             if key == ord("e"):
-
                 print(
                     "[SYSTEM] "
-                    "EMERGENCY RELEASE REQUESTED"
+                    "EMERGENCY RELEASE"
                 )
 
                 emergency_release = True
@@ -610,7 +708,6 @@ def main():
                 shutdown_event.set()
 
                 if ezb is not None:
-
                     ezb.release_all_servos()
 
                 break
@@ -620,7 +717,6 @@ def main():
             )
 
     except KeyboardInterrupt:
-
         print()
         print(
             "[SYSTEM] CTRL+C"
@@ -629,7 +725,6 @@ def main():
         shutdown_event.set()
 
     except Exception as error:
-
         print()
         print(
             "[SYSTEM] ERROR:",
@@ -643,11 +738,6 @@ def main():
         shutdown_event.set()
 
     finally:
-
-        # ==============================================
-        # SHUTDOWN
-        # ==============================================
-
         state.set_system(
             "SHUTTING_DOWN"
         )
@@ -655,39 +745,31 @@ def main():
         shutdown_event.set()
 
         print(
-            "[SYSTEM] Waiting for workers..."
+            "[SYSTEM] "
+            "Waiting for workers..."
         )
 
         for thread in threads:
-
             thread.join(
                 timeout=3.0
             )
 
-        # ==============================================
-        # ROBOT CLEANUP
-        # ==============================================
-
         if six is not None:
-
             if emergency_release:
-
-                # Servos already released.
                 pass
 
             elif (
                 person_event.is_set()
                 or
-                obstacle_event.is_set()
+                navigation_obstacle_event.is_set()
+                or
+                wall_event.is_set()
+                or
+                stuck_event.is_set()
             ):
-
-                # Do not unexpectedly move toward
-                # neutral if an unsafe condition
-                # remains in front of the robot.
                 six.halt()
 
             else:
-
                 print(
                     "[SYSTEM] "
                     "Returning Six to stable stance"
@@ -696,7 +778,6 @@ def main():
                 six.stop()
 
         if ezb is not None:
-
             ezb.disconnect()
 
         cv2.destroyAllWindows()

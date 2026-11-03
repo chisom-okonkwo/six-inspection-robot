@@ -1,28 +1,43 @@
+import numpy as np
+
 from perception.object_policy import (
     OBSTACLE_CLASSES,
-    SMALL_FLOOR_CLASSES,
     DEFAULT_OBSTACLE_MIN_CONFIDENCE,
     OBSTACLE_MIN_CONFIDENCE,
 )
 
 
 class ObstacleAnalyzer:
+    """
+    Semantic candidate analyzer for ultrasonic fusion.
+
+    NEW responsibility split:
+
+    Camera / YOLO:
+        WHAT is in front of Six?
+        Is it one of the configured navigation classes
+        (currently backpack/book)?
+        Which side is it on?
+        Does its bounding box overlap the forward corridor?
+
+    HC-SR04:
+        WHEN is that candidate physically close enough
+        to trigger avoidance?
+
+    Therefore this analyzer deliberately does NOT reject a
+    backpack/book just because monocular depth estimates it
+    as far away. Distance is metadata here, not the final
+    navigation gate.
+    """
 
     def __init__(
         self,
-
-        # Approximate width of Six's travel
-        # corridor inside the image.
         corridor_left_ratio=0.28,
         corridor_right_ratio=0.72,
 
-        min_bottom_ratio=0.55,
-
-        normal_min_area_ratio=0.008,
-
-        small_min_area_ratio=0.0025,
-
-        min_risk=0.22
+        # Require some meaningful overlap with the
+        # forward travel corridor.
+        min_corridor_overlap=0.10
     ):
 
         self.corridor_left_ratio = (
@@ -33,33 +48,12 @@ class ObstacleAnalyzer:
             corridor_right_ratio
         )
 
-        self.min_bottom_ratio = (
-            min_bottom_ratio
+        self.min_corridor_overlap = (
+            min_corridor_overlap
         )
-
-        self.normal_min_area_ratio = (
-            normal_min_area_ratio
-        )
-
-        self.small_min_area_ratio = (
-            small_min_area_ratio
-        )
-
-        self.min_risk = min_risk
 
     # ==================================================
-
-    @staticmethod
-    def _clamp01(value):
-
-        return max(
-            0.0,
-            min(
-                1.0,
-                value
-            )
-        )
-
+    # HELPERS
     # ==================================================
 
     @staticmethod
@@ -72,23 +66,228 @@ class ObstacleAnalyzer:
 
         return max(
             0,
-            min(
-                end1,
-                end2
-            )
+            min(end1, end2)
             -
-            max(
-                start1,
-                start2
+            max(start1, start2)
+        )
+
+    @staticmethod
+    def _valid_depth_values(
+        region
+    ):
+
+        if (
+            region is None
+            or
+            region.size == 0
+        ):
+
+            return np.array(
+                [],
+                dtype=np.float32
+            )
+
+        mask = (
+            np.isfinite(region)
+            &
+            (region > 0.05)
+            &
+            (region < 20.0)
+        )
+
+        return region[
+            mask
+        ]
+
+    # ==================================================
+    # OPTIONAL CAMERA DEPTH METADATA
+    # ==================================================
+
+    def _object_depth(
+        self,
+        depth_map,
+        bbox
+    ):
+        """
+        Estimate object depth for logging/debugging.
+
+        This value does NOT decide whether navigation
+        begins. The HC-SR04 handles that.
+        """
+
+        if depth_map is None:
+            return None
+
+        height, width = (
+            depth_map.shape[:2]
+        )
+
+        x1, y1, x2, y2 = bbox
+
+        x1 = max(
+            0,
+            min(width - 1, x1)
+        )
+
+        x2 = max(
+            0,
+            min(width, x2)
+        )
+
+        y1 = max(
+            0,
+            min(height - 1, y1)
+        )
+
+        y2 = max(
+            0,
+            min(height, y2)
+        )
+
+        if (
+            x2 <= x1
+            or
+            y2 <= y1
+        ):
+
+            return None
+
+        box_height = (
+            y2 - y1
+        )
+
+        lower_y = int(
+            y1
+            +
+            0.45 * box_height
+        )
+
+        region = depth_map[
+            lower_y:y2,
+            x1:x2
+        ]
+
+        valid = (
+            self._valid_depth_values(
+                region
             )
         )
 
+        if valid.size < 10:
+            return None
+
+        return float(
+            np.percentile(
+                valid,
+                25
+            )
+        )
+
+    # --------------------------------------------------
+
+    def _corridor_clearance(
+        self,
+        depth_map
+    ):
+        """
+        Optional left/right clearance estimates.
+
+        These remain useful for choosing which direction
+        Six should turn, even though ultrasonic decides
+        when avoidance starts.
+        """
+
+        if depth_map is None:
+            return (
+                None,
+                None
+            )
+
+        height, width = (
+            depth_map.shape[:2]
+        )
+
+        corridor_left = int(
+            width
+            * self.corridor_left_ratio
+        )
+
+        corridor_right = int(
+            width
+            * self.corridor_right_ratio
+        )
+
+        center = (
+            corridor_left
+            +
+            (
+                corridor_right
+                -
+                corridor_left
+            )
+            // 2
+        )
+
+        top = int(
+            height * 0.22
+        )
+
+        bottom = int(
+            height * 0.68
+        )
+
+        left_values = (
+            self._valid_depth_values(
+                depth_map[
+                    top:bottom,
+                    corridor_left:center
+                ]
+            )
+        )
+
+        right_values = (
+            self._valid_depth_values(
+                depth_map[
+                    top:bottom,
+                    center:corridor_right
+                ]
+            )
+        )
+
+        left_clearance = (
+            float(
+                np.median(
+                    left_values
+                )
+            )
+            if left_values.size >= 10
+            else None
+        )
+
+        right_clearance = (
+            float(
+                np.median(
+                    right_values
+                )
+            )
+            if right_values.size >= 10
+            else None
+        )
+
+        return (
+            left_clearance,
+            right_clearance
+        )
+
+    # ==================================================
+    # MAIN ANALYSIS
     # ==================================================
 
     def analyze(
         self,
         frame,
-        detections
+        detections,
+        depth_map=None
     ):
 
         height, width = (
@@ -109,14 +308,7 @@ class ObstacleAnalyzer:
             * self.corridor_right_ratio
         )
 
-        center_x = (
-            width / 2
-        )
-
         candidates = []
-
-        left_score = 0.0
-        right_score = 0.0
 
         for detection in detections:
 
@@ -124,19 +316,22 @@ class ObstacleAnalyzer:
                 detection["label"]
             )
 
-            confidence = (
+            confidence = float(
                 detection["confidence"]
             )
 
-            # Person safety is handled separately.
+            # Human safety is handled independently.
             if label == "person":
                 continue
 
-            # This is the configurable policy.
+            # This is the semantic navigation policy.
+            # With your current object_policy.py this
+            # means only backpack and book.
             if (
                 label
                 not in OBSTACLE_CLASSES
             ):
+
                 continue
 
             minimum_confidence = (
@@ -150,6 +345,7 @@ class ObstacleAnalyzer:
                 confidence
                 < minimum_confidence
             ):
+
                 continue
 
             x1, y1, x2, y2 = (
@@ -176,19 +372,13 @@ class ObstacleAnalyzer:
                 y2 / height
             )
 
-            object_center = (
-                (x1 + x2)
-                / 2
-            )
-
             center_ratio = (
-                object_center
+                (
+                    x1 + x2
+                )
+                / 2
                 / width
             )
-
-            # --------------------------------------
-            # Does it intersect our path?
-            # --------------------------------------
 
             corridor_overlap_pixels = (
                 self._overlap(
@@ -204,118 +394,15 @@ class ObstacleAnalyzer:
                 / box_width
             )
 
-            if corridor_overlap <= 0:
-
-                # It can remain visible on the side
-                # without blocking the robot.
-                continue
-
-            # --------------------------------------
-            # Proximity
-            # --------------------------------------
-
+            # Object exists but is clearly beside the
+            # projected travel corridor.
             if (
-                bottom_ratio
-                < self.min_bottom_ratio
-            ):
-
-                # Likely far away / high in image.
-                continue
-
-            # --------------------------------------
-            # Small-object handling
-            # --------------------------------------
-
-            if (
-                label
-                in SMALL_FLOOR_CLASSES
-            ):
-
-                minimum_area = (
-                    self.small_min_area_ratio
-                )
-
-            else:
-
-                minimum_area = (
-                    self.normal_min_area_ratio
-                )
-
-            # Very close objects can matter even
-            # with a tiny bounding box.
-            if (
-                area_ratio
-                < minimum_area
-                and
-                bottom_ratio
-                < 0.80
+                corridor_overlap
+                <
+                self.min_corridor_overlap
             ):
 
                 continue
-
-            # --------------------------------------
-            # Risk score
-            # --------------------------------------
-
-            proximity_score = (
-                self._clamp01(
-                    (
-                        bottom_ratio
-                        - self.min_bottom_ratio
-                    )
-                    /
-                    (
-                        1.0
-                        - self.min_bottom_ratio
-                    )
-                )
-            )
-
-            size_score = (
-                self._clamp01(
-                    area_ratio
-                    / 0.10
-                )
-            )
-
-            center_score = (
-                1.0
-                -
-                self._clamp01(
-                    abs(
-                        center_ratio
-                        - 0.5
-                    )
-                    / 0.5
-                )
-            )
-
-            risk = confidence * (
-                0.45
-                * proximity_score
-
-                +
-
-                0.30
-                * corridor_overlap
-
-                +
-
-                0.15
-                * size_score
-
-                +
-
-                0.10
-                * center_score
-            )
-
-            if risk < self.min_risk:
-                continue
-
-            # --------------------------------------
-            # Determine side
-            # --------------------------------------
 
             if center_ratio < 0.42:
 
@@ -329,38 +416,27 @@ class ObstacleAnalyzer:
 
                 side = "center"
 
-            # --------------------------------------
-            # Measure available left/right space
-            # --------------------------------------
-
-            left_overlap = (
-                self._overlap(
-                    x1,
-                    x2,
-                    corridor_left,
-                    center_x
+            camera_depth_m = (
+                self._object_depth(
+                    depth_map,
+                    detection["bbox"]
                 )
-                / box_width
             )
 
-            right_overlap = (
-                self._overlap(
-                    x1,
-                    x2,
-                    center_x,
-                    corridor_right
+            # Risk is semantic/corridor relevance only.
+            # It is NOT the final distance decision.
+            risk = (
+                confidence
+                *
+                (
+                    0.65
+                    +
+                    0.35
+                    * min(
+                        1.0,
+                        corridor_overlap
+                    )
                 )
-                / box_width
-            )
-
-            left_score += (
-                risk
-                * left_overlap
-            )
-
-            right_score += (
-                risk
-                * right_overlap
             )
 
             candidates.append({
@@ -380,10 +456,15 @@ class ObstacleAnalyzer:
 
                 "corridor_overlap":
                     corridor_overlap,
+
+                "distance_m":
+                    camera_depth_m,
+
+                "source":
+                    "semantic"
             })
 
         if not candidates:
-
             return None
 
         primary = max(
@@ -392,29 +473,55 @@ class ObstacleAnalyzer:
                 item["risk"]
         )
 
-        # ==========================================
-        # ESCAPE DIRECTION
-        # ==========================================
+        (
+            left_clearance,
+            right_clearance
+        ) = self._corridor_clearance(
+            depth_map
+        )
 
-        if primary["side"] == "left":
+        # ==================================================
+        # TURN DIRECTION
+        # ==================================================
 
-            escape = "right"
+        if (
+            left_clearance is not None
+            and
+            right_clearance is not None
+            and
+            abs(
+                left_clearance
+                -
+                right_clearance
+            )
+            >= 0.10
+        ):
+
+            recommended_escape = (
+                "left"
+                if left_clearance
+                >
+                right_clearance
+                else "right"
+            )
+
+        elif primary["side"] == "left":
+
+            recommended_escape = (
+                "right"
+            )
 
         elif primary["side"] == "right":
 
-            escape = "left"
+            recommended_escape = (
+                "left"
+            )
 
         else:
 
-            # Center obstacle:
-            # choose side with less obstruction.
-            if left_score <= right_score:
-
-                escape = "left"
-
-            else:
-
-                escape = "right"
+            recommended_escape = (
+                "left"
+            )
 
         return {
             "primary":
@@ -423,15 +530,49 @@ class ObstacleAnalyzer:
             "risk":
                 primary["risk"],
 
+            # Camera depth remains useful for logs and
+            # debugging, but does not trigger navigation.
+            "distance_m":
+                primary["distance_m"],
+
+            "source":
+                "semantic",
+
+            "requires_backoff":
+                False,
+
             "recommended_escape":
-                escape,
+                recommended_escape,
 
             "left_score":
-                left_score,
+                0.0,
 
             "right_score":
-                right_score,
+                0.0,
+
+            "left_clearance_m":
+                left_clearance,
+
+            "right_clearance_m":
+                right_clearance,
 
             "candidate_count":
                 len(candidates),
+
+            "depth_summary":
+                None,
         }
+
+    # ==================================================
+    # DEBUG OVERLAY
+    # ==================================================
+
+    def draw_debug(
+        self,
+        frame,
+        analysis
+    ):
+
+        # Keep this intentionally light because YOLO's
+        # result.plot() already draws object boxes.
+        return frame
